@@ -42,15 +42,17 @@ fn sequential_word_counter() -> HashMap<String, i32> {
 
 // Code Listing 1-2: A task-parallel word counter
 fn task_parallel_word_counter() {
+    // Read the files in this
     let paths = fs::read_dir("text_files").unwrap();
 
+
     paths
-        .par_bridge()
-        .for_each(|path| {
-            // Count the number of occurences of "the" in the file
+        .par_bridge()// We create a parallel iterator for all of the paths
+        .for_each(|path| { // Iterate through each of paths in the folder
+            // Count the number of occurrences of "the" in the file
             let file_name = path.as_ref().unwrap().path().display().to_string();
             let contents = fs::read_to_string(path.unwrap().path()).unwrap();
-            let mut count = 0;
+            let mut count = 0; // Store the count of 'the' in the file
             let re = Regex::new(r"(?i)\bthe\b").unwrap();
             for _ in re.find_iter(&contents) {
                 count += 1;
@@ -65,18 +67,18 @@ fn task_parallel_word_counter() {
 
 // Code Listing 1-3: A data-parallel word counter
 fn pipeline_parallel_word_counter() {
-    struct FileBreakdown
-    {
+    // Define structs for sending data between pipelines
+    struct FileBreakdown {
         file_contents: String,
         filename: String,
     }
 
-    struct FileSummary
-    {
+    struct FileSummary {
         count: usize,
         filename: String,
     }
 
+    // Define the first step in the pipeline
     struct Downloader {
         tx: Sender<FileBreakdown>,
     }
@@ -90,11 +92,14 @@ fn pipeline_parallel_word_counter() {
                     file_contents: contents,
                     filename: file_name.clone(),
                 };
+
+                // send the metadata of the file
                 self.tx.send(file_pack).unwrap();
             }
         }
     }
 
+    // Define the second step in the pipeline
     struct Processor {
         tx: Sender<FileSummary>,
         rx: Receiver<FileBreakdown>,
@@ -102,26 +107,44 @@ fn pipeline_parallel_word_counter() {
 
     impl Processor {
         fn run(&self) {
-            while let Ok(received_file) = self.rx.recv() {
-                let re = Regex::new(r"(?i)\bthe\b").unwrap();
-                let mut count = 0;
-                for _ in re.find_iter(&received_file.file_contents) {
-                    count += 1;
-                }
+            // Define our regex
+            let re = Regex::new(r"(?i)\bthe\b").unwrap();
+            // create rayon thread pool
+            let pool = rayon::ThreadPoolBuilder::new().build().unwrap();
 
+            for received_file in self.rx.iter() {
+                // split out file into lines
+                let chunks = received_file.file_contents.split('\n').collect::<Vec<&str>>();
 
-                self.tx.send(FileSummary { count, filename: received_file.filename });
+                // make a thread for each of the lines and count the number of 'the' in each line
+                let counts: Vec<usize> = pool.install(|| {
+                    chunks.par_iter()
+                        .map(|chunk| {
+                            let mut count = 0;
+                            for _ in re.find_iter(&chunk) {
+                                count += 1;
+                            }
+                            count
+                        })
+                        .collect()
+                });
+
+                // get the total count from each line
+                let count = counts.iter().sum();
+                self.tx.send(FileSummary { count, filename: received_file.filename.clone() }).unwrap();
             }
         }
     }
 
+    // Define the third step in the pipeline
     struct Uploader {
         rx: Receiver<FileSummary>,
     }
 
     impl Uploader {
         fn run(&self) {
-            while let Ok(summary) = self.rx.recv() {
+            for summary in self.rx.iter() {
+                // print the summary to the console
                 println!(
                     "The file: {} has {} occurrences of the word 'the'",
                     summary.filename, summary.count
@@ -130,19 +153,26 @@ fn pipeline_parallel_word_counter() {
         }
     }
 
+    // read file paths
     let paths = fs::read_dir("text_files").unwrap();
 
+    // create the channels
     let (downloader_tx, processor_rx) = channel();
     let (processor_tx, uploader_rx) = channel();
 
+    // Define our download step
     let downloader = Downloader { tx: downloader_tx };
+
+    //Define the processing step
     let processor = Processor {
         tx: processor_tx,
         rx: processor_rx,
     };
+
+    //define our upload code (printing)
     let uploader = Uploader { rx: uploader_rx };
 
-    // let files_clone = paths;
+    // Create the threads for each step and run
     let downloader_thread = thread::spawn(move || downloader.run(paths));
     let processor_thread = thread::spawn(move || processor.run());
     let uploader_thread = thread::spawn(move || uploader.run());

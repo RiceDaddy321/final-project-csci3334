@@ -52,20 +52,13 @@ fn task_parallel_word_counter() {
             let contents = fs::read_to_string(path.unwrap().path()).unwrap();
             let mut count = 0;
             let re = Regex::new(r"(?i)\bthe\b").unwrap();
-            // for _ in re.find_iter(&contents) {
-            //     count += 1;
-            // }
-
-            let words: Vec<_> = contents.split_whitespace().collect();
-
-            let words_with_the: Vec<_> = words
-                .par_iter()
-                .filter(|word| re.find(word).is_some())
-                .collect();
+            for _ in re.find_iter(&contents) {
+                count += 1;
+            }
 
             println!(
                 "The file: {} has {:?} occurrences of the word 'the'",
-                file_name, words_with_the.len()
+                file_name, count
             );
         });
 }
